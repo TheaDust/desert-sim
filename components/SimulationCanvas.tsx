@@ -99,13 +99,13 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
     
     const auraTexture = PIXI.Texture.from(auraCanvas);
     
-    // Create 2 aura sprites for multi-hand support
-    const auraSprites: PIXI.Sprite[] = [
-        new PIXI.Sprite(auraTexture),
-        new PIXI.Sprite(auraTexture)
-    ];
+    // Create specific sprites for Left and Right hands to prevent jumping
+    const auraSprites: Record<string, PIXI.Sprite> = {
+      'Left': new PIXI.Sprite(auraTexture),
+      'Right': new PIXI.Sprite(auraTexture)
+    };
 
-    auraSprites.forEach(sprite => {
+    Object.values(auraSprites).forEach(sprite => {
         sprite.anchor.set(0.5);
         sprite.blendMode = ((PIXI as any).BLEND_MODES?.ADD ?? 1) as any;
         sprite.alpha = 0;
@@ -159,11 +159,10 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
 
     onStatsUpdate({ fps: 60, particleCount: particleCount, hands: [] });
 
-    // Smooth tracking for 2 hands
-    const smoothHands = [
-        { x: width / 2, y: height / 2 },
-        { x: width / 2, y: height / 2 }
-    ];
+    // Smooth tracking Map using Hand ID as key
+    const smoothHands = new Map<string, {x: number, y: number}>();
+    smoothHands.set('Left', { x: width/2, y: height/2 });
+    smoothHands.set('Right', { x: width/2, y: height/2 });
 
     // 3. Physics Loop
     let tickerCount = 0;
@@ -174,23 +173,32 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
       const hands = handDataRef.current;
 
       // --- Update Auras ---
-      // Reset auras first
-      auraSprites.forEach(s => s.alpha *= 0.9);
+      // 1. Decay all auras first
+      Object.values(auraSprites).forEach(s => s.alpha *= 0.85);
 
-      hands.forEach((hand, index) => {
-          if (index >= 2) return; 
-          const sprite = auraSprites[index];
+      // 2. Update active auras based on Hand ID (Left/Right)
+      hands.forEach((hand) => {
+          const sprite = auraSprites[hand.id];
+          if (!sprite) return; // Should not happen given we cover Left/Right
           
           let handX = hand.x * screenW;
           let handY = hand.y * screenH;
 
+          // Get smooth position for this specific hand ID
+          let smoothPos = smoothHands.get(hand.id);
+          if (!smoothPos) {
+             smoothPos = { x: handX, y: handY };
+             smoothHands.set(hand.id, smoothPos);
+          }
+
           // Smooth Movement
-          smoothHands[index].x += (handX - smoothHands[index].x) * 0.2;
-          smoothHands[index].y += (handY - smoothHands[index].y) * 0.2;
+          smoothPos.x += (handX - smoothPos.x) * 0.25;
+          smoothPos.y += (handY - smoothPos.y) * 0.25;
 
-          sprite.x = smoothHands[index].x;
-          sprite.y = smoothHands[index].y;
+          sprite.x = smoothPos.x;
+          sprite.y = smoothPos.y;
 
+          // Override alpha decay for active hands
           if (hand.gesture === HandGesture.OPEN_PALM) {
             sprite.tint = 0xFFD700; 
             sprite.alpha = 0.4;

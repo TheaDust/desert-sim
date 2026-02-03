@@ -64,10 +64,10 @@ export class HandDetectionService {
       });
 
       this.hands.setOptions({
-        maxNumHands: 2, // Enable 2 hands
+        maxNumHands: 2,
         modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
+        minDetectionConfidence: 0.7, // Increased from 0.5 to reduce ghost hands
+        minTrackingConfidence: 0.6
       });
 
       this.hands.onResults(this.onResults);
@@ -132,11 +132,13 @@ export class HandDetectionService {
   private onResults = (results: Results) => {
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
       this.onHandUpdate([]);
-      this.lastPositions.clear();
+      // Do not clear lastPositions here instantly to allow for slight jitter smoothing if needed,
+      // but strictly speaking for "Stuck UI", sending [] is correct.
       return;
     }
 
     const currentHands: HandData[] = [];
+    const usedLabels = new Set<string>();
     const now = performance.now();
 
     results.multiHandLandmarks.forEach((landmarks, index) => {
@@ -145,12 +147,16 @@ export class HandDetectionService {
         ? results.multiHandedness[index].label 
         : (index === 0 ? 'Right' : 'Left'); // Fallback
 
-      // FIX: Swap Left/Right labels. 
-      // MediaPipe assumes unmirrored input. Since we are using a front-facing camera 
-      // which acts as a mirror, and we are flipping X coordinates for the UI,
-      // the labels from MediaPipe are effectively inverted relative to the user's perception.
-      // 'Left' (MP) -> User's Right Hand -> Label 'Right'
+      // Swap Left/Right for mirrored experience
       const label = mpLabel === 'Left' ? 'Right' : 'Left';
+
+      // CRITICAL FIX: Deduplicate labels.
+      // If MediaPipe glitches and reports two 'Right' hands, ignore the second one.
+      // This prevents duplicate keys in React and logic errors in the physics engine.
+      if (usedLabels.has(label)) {
+        return; 
+      }
+      usedLabels.add(label);
 
       // Mirror X coordinate for intuitive interaction
       const wrist = landmarks[0];
@@ -166,7 +172,7 @@ export class HandDetectionService {
 
       if (lastPos) {
         const dt = (now - lastPos.time) / 1000;
-        if (dt > 0.01) {
+        if (dt > 0.01 && dt < 0.2) { // Only calculate velocity if frame time is reasonable
           velocity = {
             x: (centerX - lastPos.x) / dt,
             y: (centerY - lastPos.y) / dt
