@@ -1,0 +1,7 @@
+{
+  "name": "Desert Gold: Kinetic Sand",
+  "description": "A high-performance interactive particle simulation controlled by hand gestures using MediaPipe and WebGL.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
