@@ -1,6 +1,6 @@
 {
-  "name": "Desert Gold: Kinetic Sand",
-  "description": "A high-performance interactive particle simulation controlled by hand gestures using MediaPipe and WebGL.",
+  "name": "Kinetic Flux",
+  "description": "A high-performance interactive particle simulation where particle color indicates velocity (Blue to Red), controlled by hand gestures.",
   "requestFramePermissions": [
     "camera"
   ]

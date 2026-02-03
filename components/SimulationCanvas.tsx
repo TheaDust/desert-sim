@@ -8,13 +8,28 @@ interface SimulationCanvasProps {
   particleCount: number;
 }
 
-// Physics Constants Optimized for Natural Fall
+// Physics Constants
 const GRAVITY = 30;          
 const FRICTION_AIR = 0.98;   
 const BOUNCE_WALL = 0.3;
 const BOUNCE_GROUND = 0.3;
 const HAND_RADIUS_SQ = 150 * 150;
-const INTERACTION_FORCE = 800; // Reduced from 1500 to 800 for subtle interaction
+const INTERACTION_FORCE = 800;
+
+// Visual Constants for Velocity Coloring
+const COLOR_SLOW_R = 20;
+const COLOR_SLOW_G = 30;
+const COLOR_SLOW_B = 150;
+const COLOR_FAST_R = 180;
+const COLOR_FAST_G = 20;
+const COLOR_FAST_B = 20;
+
+const DELTA_R = COLOR_FAST_R - COLOR_SLOW_R;
+const DELTA_G = COLOR_FAST_G - COLOR_SLOW_G;
+const DELTA_B = COLOR_FAST_B - COLOR_SLOW_B;
+
+const COLOR_MAX_SPEED = 200;
+const INV_COLOR_MAX_SPEED = 1 / COLOR_MAX_SPEED;
 
 const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsUpdate, particleCount }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -22,14 +37,10 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
   const appRef = useRef<PIXI.Application | null>(null);
   const handServiceRef = useRef<HandDetectionService | null>(null);
   
-  const handDataRef = useRef<HandData>({
-    x: 0.5,
-    y: 0.5,
-    gesture: HandGesture.NONE,
-    velocity: { x: 0, y: 0 }
-  });
+  // Store array of detected hands
+  const handDataRef = useRef<HandData[]>([]);
 
-  // Use a ref to hold particle data. Initialize lazily to ensure it matches prop size if re-mounted.
+  // Use a ref to hold particle data
   const particlesRef = useRef<{
     x: Float32Array;
     y: Float32Array;
@@ -66,7 +77,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
     appRef.current = app;
     containerRef.current.appendChild(app.view as unknown as HTMLCanvasElement);
 
-    // --- Interaction Field Aura ---
+    // --- Interaction Field Aura (Create Pool of 2) ---
     const auraRadius = Math.sqrt(HAND_RADIUS_SQ);
     const canvasSize = auraRadius * 4;
     const auraCanvas = document.createElement('canvas');
@@ -87,19 +98,26 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
     }
     
     const auraTexture = PIXI.Texture.from(auraCanvas);
-    const auraSprite = new PIXI.Sprite(auraTexture);
-    auraSprite.anchor.set(0.5);
-    auraSprite.blendMode = ((PIXI as any).BLEND_MODES?.ADD ?? 1) as any;
-    auraSprite.alpha = 0;
     
-    app.stage.addChild(auraSprite);
+    // Create 2 aura sprites for multi-hand support
+    const auraSprites: PIXI.Sprite[] = [
+        new PIXI.Sprite(auraTexture),
+        new PIXI.Sprite(auraTexture)
+    ];
+
+    auraSprites.forEach(sprite => {
+        sprite.anchor.set(0.5);
+        sprite.blendMode = ((PIXI as any).BLEND_MODES?.ADD ?? 1) as any;
+        sprite.alpha = 0;
+        app.stage.addChild(sprite);
+    });
 
     // 2. Setup Particles
     const particleContainer = new PIXI.Container();
     app.stage.addChild(particleContainer);
 
     const particleGraphics = new PIXI.Graphics();
-    particleGraphics.beginFill(0xFFFFFF);
+    particleGraphics.beginFill(0xFFFFFF); 
     particleGraphics.drawCircle(0, 0, 4);
     particleGraphics.endFill();
     const particleTexture = app.renderer.generateTexture(particleGraphics);
@@ -109,8 +127,8 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
     const width = app.screen.width;
     const height = app.screen.height;
     
-    const colors = [0xFFD700, 0xE5C100, 0xC5A000, 0xFFE066, 0xDAA520, 0xF4A460];
-    
+    const initialTint = (COLOR_SLOW_R << 16) | (COLOR_SLOW_G << 8) | COLOR_SLOW_B;
+
     // Initialize Randomly
     for (let i = 0; i < particleCount; i++) {
       const sprite = new PIXI.Sprite(particleTexture);
@@ -126,7 +144,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
       p.radius[i] = 3 * sizeVar;
 
       sprite.scale.set(sizeVar * 0.5);
-      sprite.tint = colors[Math.floor(Math.random() * colors.length)];
+      sprite.tint = initialTint;
       
       sprites.push(sprite);
       particleContainer.addChild(sprite);
@@ -139,10 +157,13 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
     const gridHead = new Int32Array(gridW * gridH).fill(-1);
     const nextParticle = new Int32Array(particleCount).fill(-1);
 
-    onStatsUpdate({ fps: 60, particleCount: particleCount, gesture: HandGesture.NONE });
+    onStatsUpdate({ fps: 60, particleCount: particleCount, hands: [] });
 
-    let smoothHandX = width / 2;
-    let smoothHandY = height / 2;
+    // Smooth tracking for 2 hands
+    const smoothHands = [
+        { x: width / 2, y: height / 2 },
+        { x: width / 2, y: height / 2 }
+    ];
 
     // 3. Physics Loop
     let tickerCount = 0;
@@ -150,47 +171,44 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
       const dt = 1 / 60; 
       const screenW = app.screen.width;
       const screenH = app.screen.height;
-      const hand = handDataRef.current;
-      let handX = hand.x * screenW;
-      let handY = hand.y * screenH;
-      const hasHand = hand.gesture !== HandGesture.NONE;
-      
-      if (!Number.isFinite(handX) || !Number.isFinite(handY)) {
-        handX = -1000;
-        handY = -1000;
-      }
+      const hands = handDataRef.current;
 
-      // --- Update Aura ---
-      if (hasHand) {
-        smoothHandX += (handX - smoothHandX) * 0.2;
-        smoothHandY += (handY - smoothHandY) * 0.2;
-        auraSprite.x = smoothHandX;
-        auraSprite.y = smoothHandY;
-        
-        if (hand.gesture === HandGesture.OPEN_PALM) {
-          auraSprite.tint = 0xFFD700; 
-          auraSprite.alpha = 0.4;
-          auraSprite.scale.set(1.1);
-        } else if (hand.gesture === HandGesture.CLOSED_FIST) {
-          auraSprite.tint = 0xFFFFFF; 
-          auraSprite.alpha = 0.5;
-          auraSprite.scale.set(0.9);
-        } else {
-          auraSprite.tint = 0xFFE0B2; 
-          auraSprite.alpha = 0.2;
-          auraSprite.scale.set(1.0);
-        }
-      } else {
-        auraSprite.alpha *= 0.9;
-      }
+      // --- Update Auras ---
+      // Reset auras first
+      auraSprites.forEach(s => s.alpha *= 0.9);
 
-      // Reduced velocity influence from 0.08 to 0.04
-      const handVelX = (Number.isFinite(hand.velocity.x) ? hand.velocity.x : 0) * screenW * 0.04;
-      const handVelY = (Number.isFinite(hand.velocity.y) ? hand.velocity.y : 0) * screenH * 0.04;
+      hands.forEach((hand, index) => {
+          if (index >= 2) return; 
+          const sprite = auraSprites[index];
+          
+          let handX = hand.x * screenW;
+          let handY = hand.y * screenH;
+
+          // Smooth Movement
+          smoothHands[index].x += (handX - smoothHands[index].x) * 0.2;
+          smoothHands[index].y += (handY - smoothHands[index].y) * 0.2;
+
+          sprite.x = smoothHands[index].x;
+          sprite.y = smoothHands[index].y;
+
+          if (hand.gesture === HandGesture.OPEN_PALM) {
+            sprite.tint = 0xFFD700; 
+            sprite.alpha = 0.4;
+            sprite.scale.set(1.1);
+          } else if (hand.gesture === HandGesture.CLOSED_FIST) {
+            sprite.tint = 0xFFFFFF; 
+            sprite.alpha = 0.5;
+            sprite.scale.set(0.9);
+          } else {
+            sprite.tint = 0xFFE0B2; 
+            sprite.alpha = 0.2;
+            sprite.scale.set(1.0);
+          }
+      });
 
       gridHead.fill(-1);
 
-      // --- Pass 1: Integration & Grid Insertion ---
+      // --- Pass 1: Integration & Grid Insertion & Coloring ---
       for (let i = 0; i < particleCount; i++) {
         // Respawn safety
         if (!Number.isFinite(p.x[i]) || !Number.isFinite(p.y[i])) {
@@ -203,28 +221,34 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
         let ax = 0;
         let ay = GRAVITY;
 
-        // Hand Interaction
-        if (hasHand) {
-          const dx = p.x[i] - handX;
-          const dy = p.y[i] - handY;
-          const distSq = dx * dx + dy * dy;
+        // Hand Interaction (Loop through all hands)
+        for (const hand of hands) {
+            const handX = hand.x * screenW;
+            const handY = hand.y * screenH;
+            const dx = p.x[i] - handX;
+            const dy = p.y[i] - handY;
+            const distSq = dx * dx + dy * dy;
 
-          if (distSq < HAND_RADIUS_SQ) {
-            const dist = Math.sqrt(distSq);
-            const nx = dx / (dist || 0.1);
-            const ny = dy / (dist || 0.1);
-            const falloff = 1 - (dist / Math.sqrt(HAND_RADIUS_SQ));
+            if (distSq < HAND_RADIUS_SQ) {
+                const dist = Math.sqrt(distSq);
+                const nx = dx / (dist || 0.1);
+                const ny = dy / (dist || 0.1);
+                const falloff = 1 - (dist / Math.sqrt(HAND_RADIUS_SQ));
 
-            p.vx[i] += handVelX * falloff;
-            p.vy[i] += handVelY * falloff;
+                // Add hand velocity
+                const handVelX = (hand.velocity?.x || 0) * screenW * 0.04;
+                const handVelY = (hand.velocity?.y || 0) * screenH * 0.04;
+                
+                p.vx[i] += handVelX * falloff;
+                p.vy[i] += handVelY * falloff;
 
-            let force = 0;
-            if (hand.gesture === HandGesture.OPEN_PALM) force = INTERACTION_FORCE * falloff;
-            else if (hand.gesture === HandGesture.CLOSED_FIST) force = -INTERACTION_FORCE * falloff;
-            
-            ax += nx * force;
-            ay += ny * force;
-          }
+                let force = 0;
+                if (hand.gesture === HandGesture.OPEN_PALM) force = INTERACTION_FORCE * falloff;
+                else if (hand.gesture === HandGesture.CLOSED_FIST) force = -INTERACTION_FORCE * falloff;
+                
+                ax += nx * force;
+                ay += ny * force;
+            }
         }
 
         // Integration
@@ -233,32 +257,45 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
         p.vx[i] *= FRICTION_AIR; 
         p.vy[i] *= FRICTION_AIR;
 
-        // Max Velocity kept at 250 as requested previously
+        // Max Velocity
         const MAX_VEL = 250;
         if (p.vx[i] > MAX_VEL) p.vx[i] = MAX_VEL;
         else if (p.vx[i] < -MAX_VEL) p.vx[i] = -MAX_VEL;
         if (p.vy[i] > MAX_VEL) p.vy[i] = MAX_VEL;
         else if (p.vy[i] < -MAX_VEL) p.vy[i] = -MAX_VEL;
 
+        // Color Gradient
+        const speedSq = p.vx[i] * p.vx[i] + p.vy[i] * p.vy[i];
+        const speed = Math.sqrt(speedSq);
+        
+        let t = speed * INV_COLOR_MAX_SPEED;
+        if (t > 1) t = 1;
+
+        const r = (COLOR_SLOW_R + DELTA_R * t) | 0;
+        const g = (COLOR_SLOW_G + DELTA_G * t) | 0;
+        const b = (COLOR_SLOW_B + DELTA_B * t) | 0;
+
+        sprites[i].tint = (r << 16) | (g << 8) | b;
+
         p.x[i] += p.vx[i] * dt * 5;
         p.y[i] += p.vy[i] * dt * 5;
 
-        // Screen Boundaries
-        const r = p.radius[i];
+        // Boundaries
+        const rRad = p.radius[i];
 
-        if (p.y[i] > screenH - r) { 
-            p.y[i] = screenH - r; 
+        if (p.y[i] > screenH - rRad) { 
+            p.y[i] = screenH - rRad; 
             p.vy[i] *= -BOUNCE_GROUND; 
-        } else if (p.y[i] < r) { 
-            p.y[i] = r; 
+        } else if (p.y[i] < rRad) { 
+            p.y[i] = rRad; 
             p.vy[i] *= -BOUNCE_WALL; 
         }
 
-        if (p.x[i] > screenW - r) { 
-            p.x[i] = screenW - r; 
+        if (p.x[i] > screenW - rRad) { 
+            p.x[i] = screenW - rRad; 
             p.vx[i] *= -BOUNCE_WALL; 
-        } else if (p.x[i] < r) { 
-            p.x[i] = r; 
+        } else if (p.x[i] < rRad) { 
+            p.x[i] = rRad; 
             p.vx[i] *= -BOUNCE_WALL; 
         }
 
@@ -273,7 +310,7 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
         }
       }
 
-      // --- Pass 2: Particle-Particle Collisions ---
+      // --- Pass 2: Particle-Particle Collisions (Same as before) ---
       for (let i = 0; i < particleCount; i++) {
         const cx = (p.x[i] / CELL_SIZE) | 0;
         const cy = (p.y[i] / CELL_SIZE) | 0;
@@ -339,12 +376,11 @@ const SimulationCanvas: React.FC<SimulationCanvasProps> = React.memo(({ onStatsU
         onStatsUpdate({
           fps: Math.round(app.ticker.FPS),
           particleCount: particleCount,
-          gesture: handDataRef.current.gesture
+          hands: handDataRef.current
         });
       }
     });
 
-    // 4. Initialize Hand Detection
     const service = new HandDetectionService(
       videoRef.current,
       (data) => { handDataRef.current = data; }

@@ -1,13 +1,13 @@
 import React, { useState, useCallback } from 'react';
 import SimulationCanvas from './components/SimulationCanvas';
-import { HandGesture, SimulationStats } from './types';
+import { HandGesture, SimulationStats, HandData } from './types';
 import { Activity, Hand, Sparkles, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [stats, setStats] = useState<SimulationStats>({
     fps: 0,
     particleCount: 0,
-    gesture: HandGesture.NONE,
+    hands: [],
   });
 
   const [sliderValue, setSliderValue] = useState(8000);
@@ -25,18 +25,38 @@ const App: React.FC = () => {
 
   const getGestureLabel = (gesture: HandGesture) => {
     switch (gesture) {
-      case HandGesture.OPEN_PALM: return 'Open Palm (Repel)';
-      case HandGesture.CLOSED_FIST: return 'Closed Fist (Attract)';
-      default: return 'No Hand Detected';
+      case HandGesture.OPEN_PALM: return 'Open';
+      case HandGesture.CLOSED_FIST: return 'Fist';
+      default: return 'None';
     }
   };
 
   const getGestureColor = (gesture: HandGesture) => {
     switch (gesture) {
-      case HandGesture.OPEN_PALM: return 'text-amber-400';
+      case HandGesture.OPEN_PALM: return 'text-blue-400';
       case HandGesture.CLOSED_FIST: return 'text-red-400';
       default: return 'text-slate-400';
     }
+  };
+
+  const renderHandStatus = () => {
+    if (stats.hands.length === 0) {
+      return (
+        <div className="text-sm text-zinc-500 italic">No hands detected</div>
+      );
+    }
+
+    // Sort hands by ID (Left, then Right) to prevent UI jumping
+    const sortedHands = [...stats.hands].sort((a, b) => a.id.localeCompare(b.id));
+
+    return sortedHands.map((hand) => (
+      <div key={hand.id} className="flex items-center justify-between text-sm mb-1 last:mb-0">
+        <span className="text-zinc-400 w-12">{hand.id}</span>
+        <span className={`font-mono font-bold ${getGestureColor(hand.gesture)}`}>
+          {getGestureLabel(hand.gesture)}
+        </span>
+      </div>
+    ));
   };
 
   return (
@@ -54,8 +74,8 @@ const App: React.FC = () => {
       <div className="absolute top-0 left-0 p-6 z-10 pointer-events-none w-full max-w-md">
         <div className="bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-xl p-4 shadow-xl pointer-events-auto">
           <div className="flex items-center justify-between mb-4">
-            <h1 className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-200 to-yellow-600">
-              Desert Gold
+            <h1 className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-400 to-red-400">
+              Kinetic Flux
             </h1>
             <div className="flex items-center space-x-2 text-xs text-zinc-500 font-mono">
               <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
@@ -65,14 +85,14 @@ const App: React.FC = () => {
 
           <div className="space-y-3">
             {/* Gesture Status */}
-            <div className="flex items-center justify-between p-2 bg-zinc-950/50 rounded-lg border border-zinc-800/50">
-              <div className="flex items-center space-x-2">
-                <Hand className={`w-4 h-4 ${getGestureColor(stats.gesture)}`} />
-                <span className="text-sm text-zinc-300 font-medium">Gesture</span>
+            <div className="flex flex-col p-3 bg-zinc-950/50 rounded-lg border border-zinc-800/50 min-h-[70px] justify-center">
+              <div className="flex items-center space-x-2 mb-2">
+                <Hand className="w-4 h-4 text-zinc-400" />
+                <span className="text-sm text-zinc-300 font-medium">Active Hands</span>
               </div>
-              <span className={`text-sm font-mono font-bold ${getGestureColor(stats.gesture)}`}>
-                {getGestureLabel(stats.gesture)}
-              </span>
+              <div className="pl-6 border-l border-zinc-800">
+                {renderHandStatus()}
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -103,7 +123,7 @@ const App: React.FC = () => {
             <div className="pt-3 border-t border-zinc-800">
               <div className="flex justify-between items-center mb-2">
                 <label className="text-xs text-zinc-400 uppercase tracking-wider">Target Count</label>
-                <span className="text-xs font-mono text-amber-400">{sliderValue.toLocaleString()}</span>
+                <span className="text-xs font-mono text-indigo-400">{sliderValue.toLocaleString()}</span>
               </div>
               <input
                 type="range"
@@ -112,7 +132,7 @@ const App: React.FC = () => {
                 step="500"
                 value={sliderValue}
                 onChange={(e) => setSliderValue(Number(e.target.value))}
-                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-amber-500 mb-3"
+                className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-indigo-500 mb-3"
               />
               <button
                 onClick={handleReload}
@@ -125,10 +145,10 @@ const App: React.FC = () => {
           </div>
           
           <div className="mt-4 text-xs text-zinc-600 border-t border-zinc-800 pt-3">
-             <p>Controls:</p>
+             <p>Controls (Multi-Hand Support):</p>
              <ul className="list-disc pl-4 mt-1 space-y-1">
-               <li><span className="text-amber-500">Open Hand</span>: Wind / Repel sand</li>
-               <li><span className="text-red-500">Closed Fist</span>: Gravity Well / Attract</li>
+               <li><span className="text-blue-400">Open Hand</span>: Wind / Repel sand</li>
+               <li><span className="text-red-400">Closed Fist</span>: Gravity Well / Attract</li>
                <li>Move hand to drag particles with velocity</li>
              </ul>
           </div>

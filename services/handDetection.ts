@@ -8,6 +8,7 @@ interface Landmark {
 
 interface Results {
   multiHandLandmarks: Landmark[][];
+  multiHandedness: Array<{ label: string, score: number }>;
 }
 
 declare global {
@@ -19,33 +20,32 @@ declare global {
 export class HandDetectionService {
   private hands: any | null = null;
   private videoElement: HTMLVideoElement;
-  private onHandUpdate: (data: HandData) => void;
-  private lastPosition: { x: number, y: number } | null = null;
-  private lastTime: number = 0;
+  private onHandUpdate: (data: HandData[]) => void;
+  
+  // Store previous positions keyed by handedness label ('Left' | 'Right')
+  private lastPositions: Map<string, { x: number, y: number, time: number }> = new Map();
+  
   private stream: MediaStream | null = null;
   private animationFrameId: number | null = null;
   private isRunning: boolean = false;
 
-  constructor(videoElement: HTMLVideoElement, onHandUpdate: (data: HandData) => void) {
+  constructor(videoElement: HTMLVideoElement, onHandUpdate: (data: HandData[]) => void) {
     this.videoElement = videoElement;
     this.onHandUpdate = onHandUpdate;
   }
 
   public async initialize() {
-    console.log("Initializing Hand Detection...");
+    console.log("Initializing Dual-Hand Detection...");
 
-    // 1. Start Camera FIRST to trigger permissions prompt immediately
+    // 1. Start Camera FIRST
     try {
       await this.startCamera();
-      console.log("Camera initialized successfully");
     } catch (err) {
-      console.error("Camera failed to start. Permissions might be denied.", err);
-      // We continue to try loading MediaPipe, though it won't receive frames.
+      console.error("Camera failed to start.", err);
     }
 
     // 2. Initialize MediaPipe Hands
     try {
-      // Poll for window.Hands to be available (max 10 seconds)
       let attempts = 0;
       while (!window.Hands && attempts < 100) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -64,7 +64,7 @@ export class HandDetectionService {
       });
 
       this.hands.setOptions({
-        maxNumHands: 1,
+        maxNumHands: 2, // Enable 2 hands
         modelComplexity: 1,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5
@@ -72,7 +72,6 @@ export class HandDetectionService {
 
       this.hands.onResults(this.onResults);
 
-      // Start processing loop if camera is active
       if (this.videoElement.readyState >= 2 || this.stream) {
         this.isRunning = true;
         this.processLoop();
@@ -86,7 +85,6 @@ export class HandDetectionService {
     if (!this.videoElement) return;
 
     try {
-      // Ensure video element properties are set for mobile/inline playback
       this.videoElement.setAttribute('autoplay', '');
       this.videoElement.setAttribute('muted', '');
       this.videoElement.setAttribute('playsinline', '');
@@ -133,48 +131,62 @@ export class HandDetectionService {
 
   private onResults = (results: Results) => {
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-      this.onHandUpdate({
-        x: 0,
-        y: 0,
-        gesture: HandGesture.NONE,
-        velocity: { x: 0, y: 0 }
-      });
-      this.lastPosition = null;
+      this.onHandUpdate([]);
+      this.lastPositions.clear();
       return;
     }
 
-    const landmarks = results.multiHandLandmarks[0];
-    
-    // Mirror X coordinate
-    const wrist = landmarks[0];
-    const middleMCP = landmarks[9];
-    const centerX = 1 - ((wrist.x + middleMCP.x) / 2); 
-    const centerY = (wrist.y + middleMCP.y) / 2;
-
-    const gesture = this.detectGesture(landmarks);
-    
+    const currentHands: HandData[] = [];
     const now = performance.now();
-    let velocity = { x: 0, y: 0 };
-    
-    if (this.lastPosition && this.lastTime > 0) {
-      const dt = (now - this.lastTime) / 1000;
-      if (dt > 0.01) {
-        velocity = {
-          x: (centerX - this.lastPosition.x) / dt,
-          y: (centerY - this.lastPosition.y) / dt
-        };
+
+    results.multiHandLandmarks.forEach((landmarks, index) => {
+      // Get raw handedness from MediaPipe
+      const mpLabel = results.multiHandedness && results.multiHandedness[index] 
+        ? results.multiHandedness[index].label 
+        : (index === 0 ? 'Right' : 'Left'); // Fallback
+
+      // FIX: Swap Left/Right labels. 
+      // MediaPipe assumes unmirrored input. Since we are using a front-facing camera 
+      // which acts as a mirror, and we are flipping X coordinates for the UI,
+      // the labels from MediaPipe are effectively inverted relative to the user's perception.
+      // 'Left' (MP) -> User's Right Hand -> Label 'Right'
+      const label = mpLabel === 'Left' ? 'Right' : 'Left';
+
+      // Mirror X coordinate for intuitive interaction
+      const wrist = landmarks[0];
+      const middleMCP = landmarks[9];
+      const centerX = 1 - ((wrist.x + middleMCP.x) / 2); 
+      const centerY = (wrist.y + middleMCP.y) / 2;
+
+      const gesture = this.detectGesture(landmarks);
+      
+      // Calculate velocity specific to this hand (Left vs Right)
+      let velocity = { x: 0, y: 0 };
+      const lastPos = this.lastPositions.get(label);
+
+      if (lastPos) {
+        const dt = (now - lastPos.time) / 1000;
+        if (dt > 0.01) {
+          velocity = {
+            x: (centerX - lastPos.x) / dt,
+            y: (centerY - lastPos.y) / dt
+          };
+        }
       }
-    }
 
-    this.lastPosition = { x: centerX, y: centerY };
-    this.lastTime = now;
+      // Update history for this hand
+      this.lastPositions.set(label, { x: centerX, y: centerY, time: now });
 
-    this.onHandUpdate({
-      x: centerX,
-      y: centerY,
-      gesture,
-      velocity
+      currentHands.push({
+        id: label,
+        x: centerX,
+        y: centerY,
+        gesture,
+        velocity
+      });
     });
+
+    this.onHandUpdate(currentHands);
   };
 
   private detectGesture(landmarks: any[]): HandGesture {
@@ -198,9 +210,6 @@ export class HandDetectionService {
     const thumbOpen = Math.hypot(thumbTip.x - wrist.x, thumbTip.y - wrist.y) > 
                       Math.hypot(thumbIP.x - wrist.x, thumbIP.y - wrist.y);
 
-    // Strict Binary Classification:
-    // Palm: 3 or more fingers open
-    // Fist: 0, 1, or 2 fingers open (Consumes "Pointing" state to improve Fist responsiveness)
     const openCount = [indexOpen, middleOpen, ringOpen, pinkyOpen, thumbOpen].filter(Boolean).length;
 
     if (openCount >= 3) return HandGesture.OPEN_PALM;

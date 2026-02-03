@@ -5,8 +5,9 @@ export enum HandGesture {
 }
 
 export interface HandData {
-  x: number; // Normalized 0-1
-  y: number; // Normalized 0-1
+  id: string;          // 'Left' or 'Right'
+  x: number;           // Normalized 0-1
+  y: number;           // Normalized 0-1
   gesture: HandGesture;
   velocity: { x: number; y: number };
 }
@@ -14,7 +15,7 @@ export interface HandData {
 export interface SimulationStats {
   fps: number;
   particleCount: number;
-  gesture: HandGesture;
+  hands: HandData[]; // Changed from single gesture to array of hands
 }
 
 export interface ParticleConfig {
